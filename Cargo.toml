@@ -1,0 +1,10 @@
+[package]
+name = "vanity"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.52.1" }
+sui-keys = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.52.1" }
+rayon = "1.10.0"
+clap = { version = "4.5.41", features = ["derive"] }
