@@ -21,6 +21,7 @@ target
 **/.history/
 **/.idea/
 .vscode/*
+*.swp
 
 .nvimrc
 .DS_Store
