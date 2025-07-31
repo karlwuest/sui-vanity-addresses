@@ -1,5 +1,6 @@
 use std::{
     io::{self, Write},
+    path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -26,6 +27,9 @@ struct CliArgs {
     /// closely matching hexspeak characters. Alternatively, a hex prefix can be provided
     /// that must start with `0x`.
     vanity_prefix: String,
+    /// The output directory to write the keys to.
+    #[arg(short, long, default_value = ".")]
+    output_dir: PathBuf,
 }
 
 fn string_to_hexspeak(s: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -103,27 +107,53 @@ fn hex_str_to_bytes(hex_str: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse();
-    let needle = if args.vanity_prefix.starts_with("0x") {
-        hex_str_to_bytes(&args.vanity_prefix)?
+    generate_vanity_addresses(
+        &args.vanity_prefix,
+        &args.output_dir,
+        args.n_vanity_addresses,
+        args.addresses_per_round,
+    )?;
+    Ok(())
+}
+
+fn generate_vanity_addresses(
+    vanity_prefix: &str,
+    output_dir: &Path,
+    n_vanity_addresses: usize,
+    addresses_per_round: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut needle = if vanity_prefix.starts_with("0x") {
+        hex_str_to_bytes(&vanity_prefix)?
     } else {
-        string_to_hexspeak(&args.vanity_prefix)?
+        string_to_hexspeak(&vanity_prefix)?
+    };
+    let uneven_last_nibble = if vanity_prefix.len() % 2 == 1 {
+        needle.pop()
+    } else {
+        None
     };
     let scheme = SignatureScheme::ED25519;
     let count = AtomicUsize::new(0);
     let mut tried = 0;
 
-    while count.load(Ordering::Relaxed) < args.n_vanity_addresses {
-        (0..args.addresses_per_round).into_par_iter().for_each(|_| {
+    while count.load(Ordering::Relaxed) < n_vanity_addresses {
+        (0..addresses_per_round).into_par_iter().for_each(|_| {
             let (sui_address, skp, _scheme, _phrase) =
                 generate_new_key(scheme, None, None).expect("generate_new_key should not fail");
             if sui_address.as_ref().starts_with(&needle) {
-                let file = format!("{sui_address}.key");
+                if let Some(uneven_last_nibble) = uneven_last_nibble {
+                    let relevant_nibble = sui_address.as_ref()[needle.len()] & 0xf0;
+                    if relevant_nibble != uneven_last_nibble {
+                        return;
+                    }
+                }
+                let file = output_dir.join(format!("{sui_address}.key"));
                 write_keypair_to_file(&skp, file).expect("write_keypair_to_file should not fail");
                 println!("Found match: {sui_address}");
                 count.fetch_add(1, Ordering::Relaxed);
             }
         });
-        tried += args.addresses_per_round;
+        tried += addresses_per_round;
         println!("Tried: {tried}");
         io::stdout().flush().expect("flush stdout");
     }
@@ -132,6 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
@@ -187,5 +218,33 @@ mod tests {
             string_to_hexspeak("dead123").unwrap(),
             vec![0xde, 0xad, 0x12, 0x30]
         );
+    }
+
+    fn generate_vanity_addresses_helper(hex_vanity_prefix: &str, n_vanity_addresses: usize) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        generate_vanity_addresses(hex_vanity_prefix, &temp_dir.path(), n_vanity_addresses, 100)
+            .unwrap();
+        let files = temp_dir
+            .path()
+            .read_dir()
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(files.len() >= n_vanity_addresses);
+        assert!(files.iter().all(|f| f
+            .file_name()
+            .to_str()
+            .unwrap()
+            .starts_with(hex_vanity_prefix)));
+    }
+
+    #[test]
+    fn test_generate_vanity_addresses() {
+        generate_vanity_addresses_helper("0x12", 1);
+    }
+
+    #[test]
+    fn test_generate_vanity_addresses_with_uneven_last_nibble() {
+        generate_vanity_addresses_helper("0x1", 1);
     }
 }
